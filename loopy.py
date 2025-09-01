@@ -43,12 +43,11 @@ class Inference:
 
     def normalize_message(self, message):
         total = math.fsum(message)
-        if total == 0:
+        if total <= 1e-15:
             return [1.0/len(message)] * len(message)
         return [msg/total for msg in message]
         
     def compute_marginals(self):
-        
         max_iterations = 25
         # LBP iterations
         for i in range(max_iterations):
@@ -84,7 +83,6 @@ class Inference:
         return beliefs
 
     def loopy_belief_propagate_to_variable(self):
-        
         # from state factors to variables
         for t in range(self.num_observations):
             obs = self.observation_sequence[t]
@@ -152,7 +150,6 @@ class Inference:
                 self.messages_from_transitions_to_variables[t][f][1] = self.normalize_message(msg_to_next)
 
     def loopy_belief_propagate_to_factor(self):
-        
         # from variables to state factors
         for t in range(self.num_observations):
             for f in range(self.factors_count):

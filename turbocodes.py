@@ -314,7 +314,7 @@ class Inference:
             max_change = max(abs(apriori[1][t] - old_apriori[1][t]) for t in range(T))
             if max_change < delta:
                 iters_used = it + 1
-                print(f"Stopping criterion reached after {iters_used} iterations.")
+                # print(f"Stopping criterion reached after {iters_used} iterations.")
                 break
 
         # average posteriors
