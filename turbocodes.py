@@ -25,7 +25,7 @@ def normalize(array):
 generator1=0o5
 generator2=0o7
 
-def _xor_from_generator(reg, generator):
+def _xor_reg_and_gen(reg, generator):
     """
     Compute XOR of register bits with generator polynomial.
     - reg: [oldest ... newest]
@@ -57,9 +57,9 @@ def generate_trellis(generator1, generator2, history_length=3):
 
         for u in (0, 1):
             reg = reg_prefix + [u]
-            fb = _xor_from_generator(reg, generator2)
+            fb = _xor_reg_and_gen(reg, generator2)
             reg_mod = reg[:-1] + [fb]
-            p = _xor_from_generator(reg_mod, generator1)
+            p = _xor_reg_and_gen(reg_mod, generator1)
             next_state = 0
             for bit in reg_mod[1:]:
                 next_state = (next_state << 1) | bit
@@ -86,12 +86,7 @@ def viterbi(systematic, parity, probability_matrix, trellis=None):
     trans = trellis["trans"]
     start_state = trellis["start_state"]
 
-    LOGZERO = -1e9
-    def safe_log(x):
-        if x <= 0:
-            return LOGZERO
-        return math.log(x)
-
+    LOGZERO = float('-inf')
     prev_scores = [LOGZERO] * S
     prev_scores[start_state] = 0.0
     backptr = [ [None]*S for _ in range(T) ]
@@ -107,10 +102,7 @@ def viterbi(systematic, parity, probability_matrix, trellis=None):
             for u in (0,1):
                 ns, p = trans[s][u]
                 emis = probability_matrix[u][sys_obs] * probability_matrix[p][par_obs]
-                if emis <= 0:
-                    score = LOGZERO
-                else:
-                    score = prev_scores[s] + safe_log(emis)
+                score = prev_scores[s] + math.log(emis) if emis > 0 else LOGZERO
                 if score > cur_scores[ns]:
                     cur_scores[ns] = score
                     cur_backptr[ns] = (s, u)
@@ -152,11 +144,9 @@ def bcjr(systematic, parity, probability_matrix, app_probability=None, trellis=N
 
     eps = 1e-12
     if app_probability is None:
-        app0 = [0.5]*T
-        app1 = [0.5]*T
+        app_probability = [ [0.5]*T, [0.5]*T ]
     else:
-        app0 = list(app_probability[0])
-        app1 = list(app_probability[1])
+        app_probability = [list(app_probability[0]), list(app_probability[1])]
 
     gamma = [ [ {0:0.0, 1:0.0} for _ in range(S) ] for _ in range(T) ]
     for t in range(T):
@@ -164,9 +154,9 @@ def bcjr(systematic, parity, probability_matrix, app_probability=None, trellis=N
         par_obs = parity[t]
         for s in range(S):
             for u in (0,1):
-                ns, p = trans[s][u]
+                _, p = trans[s][u]
                 emis = probability_matrix[u][sys_obs] * probability_matrix[p][par_obs]
-                prior_u = app0[t] if u==0 else app1[t]
+                prior_u = app_probability[u][t]
                 gamma[t][s][u] = emis * max(prior_u, eps)
 
     # Forward (alpha)
@@ -178,7 +168,7 @@ def bcjr(systematic, parity, probability_matrix, app_probability=None, trellis=N
             if a_s == 0.0:
                 continue
             for u in (0,1):
-                ns = trans[s][u][0]
+                ns, _ = trans[s][u]
                 contrib = a_s * gamma[t][s][u]
                 alpha[t+1][ns] += contrib
         ssum = sum(alpha[t+1])
@@ -192,34 +182,25 @@ def bcjr(systematic, parity, probability_matrix, app_probability=None, trellis=N
         for s in range(S):
             val = 0.0
             for u in (0,1):
-                ns = trans[s][u][0]
+                ns, _ = trans[s][u]
                 val += gamma[t][s][u] * beta[t+1][ns]
             beta[t][s] = val
         ssum = sum(beta[t])
         if ssum > 0:
             beta[t] = [x/ssum for x in beta[t]]
 
-    post0 = [0.0]*T
-    post1 = [0.0]*T
+    post_probability = [[0.0]*T, [0.0]*T]
     for t in range(T):
-        numer0 = 0.0
-        numer1 = 0.0
+        numerator = [0.0, 0.0]
         for s in range(S):
             for u in (0,1):
-                ns = trans[s][u][0]
+                ns, _ = trans[s][u]
                 contrib = alpha[t][s] * gamma[t][s][u] * beta[t+1][ns]
-                if u == 0:
-                    numer0 += contrib
-                else:
-                    numer1 += contrib
-        ssum = numer0 + numer1
-        if ssum <= 0:
-            post0[t] = app0[t]
-            post1[t] = app1[t]
-        else:
-            post0[t] = numer0/ssum
-            post1[t] = numer1/ssum
-    return [post0, post1]
+                numerator[u] += contrib
+        ssum = sum(numerator)
+        for u in (0,1):
+            post_probability[u][t] = numerator[u]/ssum if ssum > 0 else app_probability[u][t]
+    return post_probability
     
 class Inference:
     def __init__(self, testcase):
@@ -259,6 +240,7 @@ class Inference:
         # def get_turbocode_output(self, iterations=8, delta=1e-3):
         iterations=8
         delta=1e-3
+        eps = 1e-12
         T = self.length
         apriori = [[0.5]*T, [0.5]*T]
         iters_used = iterations
@@ -272,11 +254,8 @@ class Inference:
             # extrinsic from decoder 1: post / apriori, normalized per time
             ext1 = [[0.0]*T, [0.0]*T]
             for t in range(T):
-                a0 = max(apriori[0][t], 1e-12)
-                a1 = max(apriori[1][t], 1e-12)
-                e0 = post1[0][t] / a0
-                e1 = post1[1][t] / a1
-                s  = e0 + e1
+                e0, e1 = [post1[u][t] / max(apriori[u][t], eps) for u in (0,1)]
+                s = e0 + e1
                 if s <= 0:
                     ext1[0][t] = 0.5; ext1[1][t] = 0.5
                 else:
@@ -289,17 +268,13 @@ class Inference:
             ]
 
             # Decoder 2 (permuted order)
-            post2 = bcjr(self.sys_perm, self.p2, self.probability_matrix,
-                        app_probability=apriori2, trellis=self.trellis)
+            post2 = bcjr(self.sys_perm, self.p2, self.probability_matrix, app_probability=apriori2, trellis=self.trellis)
 
             # extrinsic from decoder 2 in permuted time
             ext2_perm = [[0.0]*T, [0.0]*T]
             for t in range(T):
-                a0 = max(apriori2[0][t], 1e-12)
-                a1 = max(apriori2[1][t], 1e-12)
-                e0 = post2[0][t] / a0
-                e1 = post2[1][t] / a1
-                s  = e0 + e1
+                e0, e1 = [post2[u][t] / max(apriori2[u][t], eps) for u in (0,1)]
+                s = e0 + e1
                 if s <= 0:
                     ext2_perm[0][t] = 0.5; ext2_perm[1][t] = 0.5
                 else:
@@ -318,11 +293,11 @@ class Inference:
                 break
 
         # average posteriors
-        post2_deint0 = [ post2[0][ self.inv_permutation[i] ] for i in range(T) ]
-        post2_deint1 = [ post2[1][ self.inv_permutation[i] ] for i in range(T) ]
+        post2_invperm0 = [ post2[0][ self.inv_permutation[i] ] for i in range(T) ]
+        post2_invperm1 = [ post2[1][ self.inv_permutation[i] ] for i in range(T) ]
 
-        final0 = [(post1[0][t] + post2_deint0[t]) / 2.0 for t in range(T)]
-        final1 = [(post1[1][t] + post2_deint1[t]) / 2.0 for t in range(T)]
+        final0 = [(post1[0][t] + post2_invperm0[t]) / 2.0 for t in range(T)]
+        final1 = [(post1[1][t] + post2_invperm1[t]) / 2.0 for t in range(T)]
 
         return ''.join('0' if final0[t] >= final1[t] else '1' for t in range(T))
 
