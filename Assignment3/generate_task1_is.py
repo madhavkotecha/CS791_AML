@@ -33,9 +33,12 @@ def reward_sum_pos_ids(reward_calc: FastRewardCalculator, tokenizer, ids: List[i
         ids: full scored context (prompt+continuation) token ids.
 
     Output:
-        R_sum (float). If len(ids) < 3, return 0.0.
+        R_sum (float).
     """
-    raise NotImplementedError("Students must implement this function.")
+    R_sum = reward_calc.calculate_reward_tokens(tokenizer.convert_ids_to_tokens(ids), normalize=False)
+    
+    return R_sum
+    # raise NotImplementedError("Students must implement this function.")
 
 def load_model(model_name: str, hf_token: str, device: str) -> Tuple[AutoTokenizer, AutoModelForCausalLM, int]:
     """Load and configure Hugging Face model components for Sequential Importance Sampling.
@@ -51,7 +54,17 @@ def load_model(model_name: str, hf_token: str, device: str) -> Tuple[AutoTokeniz
             - model: AutoModelForCausalLM in evaluation mode on target device
             - eos_id: End-of-sequence token ID for generation termination
     """
-    raise NotImplementedError("Students must implement this function.")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, token=hf_token)
+    model.to(device)
+    model.eval()
+
+    return tokenizer, model, tokenizer.eos_token_id
+    # raise NotImplementedError("Students must implement this function.")
 
 @torch.no_grad()
 def topk_decode_ids(
@@ -74,7 +87,27 @@ def topk_decode_ids(
     Output:
       gen_ids: List[int] of sampled token ids for the continuation.
     """
-    raise NotImplementedError("Students must implement this function.")
+
+    curr_ids = tokenizer(prefix, return_tensors="pt").to(model.device).input_ids
+    
+    generated_token_ids = []
+    for _ in range(max_new):
+        logits = model(curr_ids).logits[:, -1, :]
+        
+        probs = torch.softmax(logits, dim=-1)
+        topk_probs, topk_indices = torch.topk(probs, k, dim=-1)
+        topk_probs = topk_probs / torch.sum(topk_probs, dim=-1, keepdim=True)
+        
+        relative_index = torch.multinomial(topk_probs, num_samples=1)
+        next_id = torch.gather(topk_indices, dim=-1, index=relative_index)
+        if next_id.item() == eos_id:
+            break
+            
+        generated_token_ids.append(next_id.item())
+        curr_ids = torch.cat([curr_ids, next_id], dim=-1)
+
+    return generated_token_ids
+    # raise NotImplementedError("Students must implement this function.")
    
 def importance_sampling_for_prompt(
     tokenizer: AutoTokenizer,
@@ -108,4 +141,34 @@ def importance_sampling_for_prompt(
         "normalized_weights": [float, ...]   # length K
       }
     """
-    raise NotImplementedError("Students must implement this function.")
+
+    combined_continuation_ids = []
+    unnormalized_weights = []
+
+    for _ in range(K):
+        continuation_ids = topk_decode_ids(tokenizer, model, prefix, max_new_tokens, k, eos_id)
+        combined_continuation_ids.append(continuation_ids)
+
+        R_sum = reward_sum_pos_ids(reward_calc, tokenizer, continuation_ids)
+        T = 1
+        if len(continuation_ids) > 0:
+            T = len(continuation_ids)
+        R_x = R_sum / T
+
+        w = math.exp(beta * R_x)
+        unnormalized_weights.append(w)
+    
+    total_weight = sum(unnormalized_weights)
+
+    if total_weight > 0 and math.isfinite(total_weight):
+        normalized_weights = [w / total_weight for w in unnormalized_weights]
+    else:
+        normalized_weights = [1.0 / K for _ in range(K)]
+    
+    samples = []
+    for i in range(K):
+        continuation_text = tokenizer.decode(combined_continuation_ids[i], skip_special_tokens=True)
+        samples.append({ "text": continuation_text, "weight": normalized_weights[i] })
+
+    return { "samples":samples, "normalized_weights": normalized_weights}
+    # raise NotImplementedError("Students must implement this function.")

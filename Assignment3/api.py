@@ -18,6 +18,8 @@ class FastRewardCalculator:
         # Keep naming stable: reward_calc.token_lm.logp(...)
         self.token_lm = _TokenLM(self._tri_probs, self._eps)
 
+        self._bi_probs = self.gen_bigram_probs()
+
     def calculate_reward_tokens(self, tokens: List[str], normalize: bool = True) -> float:
         """
         Args:
@@ -32,7 +34,43 @@ class FastRewardCalculator:
             float:
                 Returns 0.0 if fewer than 3 tokens are provided.
         """
-        raise NotImplementedError("Students must implement this function.")
+        T = len(tokens)
+        if T < 3:
+            return 0.0
+
+        total = 0.0
+        for i in range(2, T):
+            log_p_tri = self.token_lm.logp(tokens[i-2], tokens[i-1], tokens[i])
+            total += -log_p_tri 
+
+        return total / T if normalize else total
+
+        # raise NotImplementedError("Students must implement this function.")
+    def gen_bigram_probs(self):
+        """
+        using trigram prob distributions we approxmate bi-gram prob distribution
+        code snippet taken from chatgpt --> to have bigram probabilities derived from trigram
+        """
+        bigram_counts = {}
+        eps = self._eps
+
+        for key, p in self._tri_probs.items():
+            parts = key.split(",")
+            if len(parts) != 3:
+                continue
+            t1, t2, t3 = parts
+            # accumulate counts for (t2 -> t3)
+            if t2 not in bigram_counts:
+                bigram_counts[t2] = {}
+            bigram_counts[t2][t3] = bigram_counts[t2].get(t3, 0.0) + float(p)
+
+        # normalize each conditional distribution
+        for prev, nxt_dict in bigram_counts.items():
+            total = sum(nxt_dict.values()) + eps
+            for nxt in nxt_dict:
+                nxt_dict[nxt] /= total
+
+        return bigram_counts
 
 
 class _TokenLM:

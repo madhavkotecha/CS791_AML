@@ -34,7 +34,17 @@ def load_model(model_name: str, hf_token: str, device: str) -> Tuple[AutoTokeniz
             - model (AutoModelForCausalLM): Model in evaluation mode, placed on specified device  
             - eos_id (int): End-of-sequence token ID for generation termination
     """
-    raise NotImplementedError("Students must implement this function.")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, token=hf_token)
+    model.to(device)
+    model.eval()
+
+    return tokenizer, model, tokenizer.eos_token_id
+    # raise NotImplementedError("Students must implement this function.")
 
 @torch.no_grad()
 def greedy_decode(tokenizer, model, prefix: str, max_new: int, eos_id: int) -> str:
@@ -51,7 +61,21 @@ def greedy_decode(tokenizer, model, prefix: str, max_new: int, eos_id: int) -> s
         str: Generated text continuation (excluding input prefix)
     """
     
-    raise NotImplementedError("Students must implement this function.")
+    curr_ids = tokenizer(prefix, return_tensors="pt").to(model.device).input_ids
+    
+    generated_ids = []
+    for _ in range(max_new):
+        logits = model(curr_ids).logits[:, -1, :]
+        
+        next_id = torch.argmax(logits, dim=-1).view(1, 1)                     # Token with highest prob.
+        if next_id.item() == eos_id:
+            break
+            
+        generated_ids.append(next_id.item())
+        curr_ids = torch.cat([curr_ids, next_id], dim=-1)
+
+    return tokenizer.decode(generated_ids, skip_special_tokens=True)          # Final decoded version
+    # raise NotImplementedError("Students must implement this function.")
 
 @torch.no_grad()
 def temperature_decode(tokenizer, model, prefix: str, max_new: int, eos_id: int, tau: float) -> str:
@@ -68,7 +92,25 @@ def temperature_decode(tokenizer, model, prefix: str, max_new: int, eos_id: int,
     Returns:
         str: Generated text continuation (excluding input prefix)
     """
-    raise NotImplementedError("Students must implement this function.")
+
+    curr_ids = tokenizer(prefix, return_tensors="pt").to(model.device).input_ids
+    
+    generated_ids = []
+    for _ in range(max_new):
+        logits = model(curr_ids).logits[:, -1, :]
+
+        # tau<1: sharper (more deterministic)
+        # tau>1: flattened (more random)
+        probs = torch.softmax(logits / tau, dim=-1)
+        next_id = torch.multinomial(probs, num_samples=1)
+        if next_id.item() == eos_id:
+            break
+            
+        generated_ids.append(next_id.item())
+        curr_ids = torch.cat([curr_ids, next_id], dim=-1)
+
+    return tokenizer.decode(generated_ids, skip_special_tokens=True)
+    # raise NotImplementedError("Students must implement this function.")
 
 @torch.no_grad()
 def topk_decode(tokenizer, model, prefix: str, max_new: int, eos_id: int, k: int) -> str:
@@ -85,5 +127,24 @@ def topk_decode(tokenizer, model, prefix: str, max_new: int, eos_id: int, k: int
     Returns:
         str: Generated text continuation (excluding input prefix)
     """
-    raise NotImplementedError("Students must implement this function.")
 
+    curr_ids = tokenizer(prefix, return_tensors="pt").to(model.device).input_ids
+    
+    generated_ids = []
+    for _ in range(max_new):
+        logits = model(curr_ids).logits[:, -1, :]
+        probs = torch.softmax(logits, dim=-1)
+        
+        topk_probs, topk_indices = torch.topk(probs, k, dim=-1)
+        topk_probs = topk_probs / torch.sum(topk_probs, dim=-1, keepdim=True)       # renormalized topk
+        
+        relative_index = torch.multinomial(topk_probs, num_samples=1)
+        next_id = torch.gather(topk_indices, dim=-1, index=relative_index)
+        if next_id.item() == eos_id:
+            break
+            
+        generated_ids.append(next_id.item())
+        curr_ids = torch.cat([curr_ids, next_id], dim=-1)
+
+    return tokenizer.decode(generated_ids, skip_special_tokens=True)
+    # raise NotImplementedError("Students must implement this function.")
